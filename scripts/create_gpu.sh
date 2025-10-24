@@ -2,17 +2,23 @@
 set -euo pipefail
 
 # Usage:
-# ./scripts/create_gpu.sh --region <REGION> --plan <PLAN> --os <OS> --label <LABEL> --sshkeys "id1,id2"
+#   ./scripts/create_gpu.sh --region <REGION> --plan <PLAN_ID> --os <OS_ID> --label <LABEL> --sshkeys "id1,id2"
 #
 # Requirements:
-# - Env: VULTR_API_KEY
-# - vultr-cli and jq installed
+#   - Env: VULTR_API_KEY
+#   - Tools: curl, jq
+#
+# Notes:
+#   - Creates the instance via REST API and polls until it's active + has a public IP.
+#   - Writes instance-<ID>.json to the current directory.
+#   - Works regardless of vultr-cli version (does not rely on CLI JSON flags).
 
+# ---------- parse args ----------
 REGION=""
 PLAN=""
 OS=""
 LABEL="gpu-from-actions"
-SSHKEYS=""
+SSHKEYS=""   # comma-separated Vultr SSH Key IDs
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -25,62 +31,95 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ---------- validations ----------
+if [[ -z "${VULTR_API_KEY:-}" ]]; then
+  echo "ERROR: VULTR_API_KEY is not set" >&2; exit 1
+fi
 if [[ -z "${REGION}" || -z "${PLAN}" || -z "${OS}" ]]; then
-  echo "Missing required parameters --region/--plan/--os" >&2
+  echo "ERROR: Missing required --region / --plan / --os" >&2; exit 1
+fi
+if ! [[ "${OS}" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: --os must be a numeric OS ID (e.g., 215 or 477). Got: '${OS}'" >&2
   exit 1
 fi
 
-# Build optional flags
-SSH_FLAG=()
+# ---------- build payload (jq 1.5/1.6 safe) ----------
+# Build ssh_key_ids as JSON array (or [] if empty)
+jq_keys_array='[]'
 if [[ -n "${SSHKEYS}" ]]; then
-  # vultr-cli accepts multiple --ssh-key-id flags
-  IFS=',' read -ra KEYS <<< "${SSHKEYS}"
-  for k in "${KEYS[@]}"; do
-    SSH_FLAG+=( --ssh-key-id "$k" )
-  done
+  jq_keys_array=$(jq -Rn --arg s "$SSHKEYS" '$s|split(",")|map(select(length>0))')
 fi
 
-echo "Creating GPU instance on Vultr..."
-CREATE_JSON=$(vultr-cli instance create   --region "${REGION}"   --plan "${PLAN}"   --os "${OS}"   --label "${LABEL}"   --format json   "${SSH_FLAG[@]}")
+# Build payload; delete ssh_key_ids if it's empty
+payload=$(
+  jq -n \
+    --arg region "$REGION" \
+    --arg plan "$PLAN" \
+    --arg label "$LABEL" \
+    --argjson os_id "$OS" \
+    --argjson ssh_key_ids "$jq_keys_array" '
+{
+  region: $region,
+  plan:   $plan,
+  os_id:  $os_id,
+  label:  $label,
+  ssh_key_ids: $ssh_key_ids
+}
+| if (.ssh_key_ids | length) == 0 then del(.ssh_key_ids) else . end
+'
+)
 
-INSTANCE_ID=$(echo "${CREATE_JSON}" | jq -r '.instance.id // .id // empty')
-if [[ -z "${INSTANCE_ID}" ]]; then
-  echo "Failed to obtain Instance ID" >&2
-  echo "${CREATE_JSON}" >&2
+echo "Creating GPU instance on Vultr (region=${REGION}, plan=${PLAN}, os=${OS})..."
+
+# ---------- POST /v2/instances ----------
+create_resp=$(curl -sS -X POST "https://api.vultr.com/v2/instances" \
+  -H "Authorization: Bearer ${VULTR_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d "$payload")
+
+# Extract instance id or show error
+INSTANCE_ID=$(echo "$create_resp" | jq -r '.instance.id // empty')
+if [[ -z "$INSTANCE_ID" ]]; then
+  echo "ERROR: Failed to create instance. API response:" >&2
+  echo "$create_resp" | jq . >&2
   exit 1
 fi
-echo "Instance ID: ${INSTANCE_ID}"
+echo "Instance ID: $INSTANCE_ID"
 
-# Wait until it's "active" and has a public IP assigned
-echo "Waiting for the instance to become active..."
+# ---------- poll until active + has IP ----------
+echo "Waiting for the instance to become active and get a public IP (up to ~10 minutes)..."
 for i in {1..60}; do
-  INFO=$(vultr-cli instance get "${INSTANCE_ID}" --format json)
-  STATUS=$(echo "${INFO}" | jq -r '.instance.status // .status // empty')
-  MAIN_IP=$(echo "${INFO}" | jq -r '.instance.main_ip // .main_ip // empty')
-  if [[ "${STATUS}" == "active" && -n "${MAIN_IP}" && "${MAIN_IP}" != "0.0.0.0" ]]; then
+  info=$(curl -sS -X GET "https://api.vultr.com/v2/instances/${INSTANCE_ID}" \
+    -H "Authorization: Bearer ${VULTR_API_KEY}")
+  status=$(echo "$info" | jq -r '.instance.status // empty')
+  ip=$(echo "$info" | jq -r '.instance.main_ip // empty')
+  if [[ "$status" == "active" && -n "$ip" && "$ip" != "0.0.0.0" ]]; then
     break
   fi
   sleep 10
 done
 
-# Get final info
-FINAL=$(vultr-cli instance get "${INSTANCE_ID}" --format json | jq '.instance // .')
-echo "${FINAL}" > "instance-${INSTANCE_ID}.json"
+# ---------- fetch final object, save file, print summary ----------
+final=$(curl -sS -X GET "https://api.vultr.com/v2/instances/${INSTANCE_ID}" \
+  -H "Authorization: Bearer ${VULTR_API_KEY}")
 
-IP=$(echo "${FINAL}" | jq -r '.main_ip // empty')
-REGION_NAME=$(echo "${FINAL}" | jq -r '.region // empty')
-LABEL_OUT=$(echo "${FINAL}" | jq -r '.label // empty')
+echo "$final" | jq '.instance' > "instance-${INSTANCE_ID}.json"
+
+label_out=$(echo "$final" | jq -r '.instance.label // empty')
+region_name=$(echo "$final" | jq -r '.instance.region // empty')
+ip=$(echo "$final" | jq -r '.instance.main_ip // empty')
 
 echo "Instance is active:"
 echo " - ID: ${INSTANCE_ID}"
-echo " - Label: ${LABEL_OUT}"
-echo " - Region: ${REGION_NAME}"
-echo " - IP: ${IP}"
+echo " - Label: ${label_out}"
+echo " - Region: ${region_name}"
+echo " - IP: ${ip}"
 
-# Export outputs to GitHub Actions, if applicable
+# ---------- GitHub Actions outputs (ignored locally) ----------
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   {
     echo "instance_id=${INSTANCE_ID}"
-    echo "ip=${IP}"
+    echo "ip=${ip}"
   } >> "$GITHUB_OUTPUT"
 fi
+
