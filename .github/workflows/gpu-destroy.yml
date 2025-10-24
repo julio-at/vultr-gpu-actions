@@ -1,0 +1,39 @@
+name: GPU • Destroy instance
+
+on:
+  workflow_dispatch:
+    inputs:
+      instance_id:
+        description: "Vultr Instance ID to destroy"
+        required: true
+
+jobs:
+  destroy-gpu:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install vultr-cli
+        uses: techknowlogick/vultr-cli-action@v2
+
+      - name: Check prerequisites
+        run: |
+          if [ -z "${{ secrets.VULTR_API_KEY }}" ]; then
+            echo "::error::Missing secret VULTR_API_KEY"
+            exit 1
+          fi
+
+      - name: Destroy instance
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          chmod +x scripts/destroy_gpu.sh
+          ./scripts/destroy_gpu.sh "${{ github.event.inputs.instance_id }}"
+
+      - name: Job summary
+        run: |
+          echo "### Vultr GPU destroyed 🗑️" >> $GITHUB_STEP_SUMMARY
+          echo "- **Instance ID:** \`${{ github.event.inputs.instance_id }}\`" >> $GITHUB_STEP_SUMMARY

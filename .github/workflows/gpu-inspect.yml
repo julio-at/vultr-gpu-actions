@@ -1,0 +1,47 @@
+name: GPU • Inspect & Helpers
+
+on:
+  workflow_dispatch:
+    inputs:
+      instance_id:
+        description: "Instance ID (optional for inspection)"
+        required: false
+        default: ""
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install vultr-cli
+        uses: techknowlogick/vultr-cli-action@v2
+
+      - name: Check prerequisites
+        run: |
+          if [ -z "${{ secrets.VULTR_API_KEY }}" ]; then
+            echo "::error::Missing secret VULTR_API_KEY"
+            exit 1
+          fi
+          jq --version >/dev/null 2>&1 || sudo apt-get update && sudo apt-get install -y jq
+
+      - name: List helpers (regions/plans/os)
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          chmod +x scripts/list_helpers.sh
+          ./scripts/list_helpers.sh | tee helpers.txt
+          echo "### Helpers" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat helpers.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Inspect instance (optional)
+        if: ${{ inputs.instance_id != '' }}
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          vultr-cli instance get ${{ inputs.instance_id }} --format json | jq .

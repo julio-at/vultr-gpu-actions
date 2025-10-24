@@ -1,0 +1,19 @@
+# Environment & secrets
+.env
+.env.*
+
+# OS & editor
+.DS_Store
+.idea/
+.vscode/
+
+# Python/virtual env (if any)
+__pycache__/
+.venv/
+.pytest_cache/
+
+# Logs & artifacts
+*.log
+*.zip
+instance-*.json
+helpers.txt

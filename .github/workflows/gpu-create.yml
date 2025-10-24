@@ -1,0 +1,68 @@
+name: GPU • Create instance
+
+on:
+  workflow_dispatch:
+    inputs:
+      region_id:
+        description: "Region ID (e.g., ewr, sjc, ams)"
+        required: true
+      plan_id:
+        description: "GPU Plan ID (e.g., vcg-1c-16gb-l40s, etc.)"
+        required: true
+      os_id:
+        description: "OS ID (e.g., 215=Ubuntu 22.04, 477=Ubuntu 24.04, etc.)"
+        required: true
+      label:
+        description: "Label for the instance"
+        required: false
+        default: "gpu-from-actions"
+      add_ssh_key_ids:
+        description: "Comma-separated SSH Key IDs (optional)"
+        required: false
+        default: ""
+
+jobs:
+  create-gpu:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install vultr-cli
+        uses: techknowlogick/vultr-cli-action@v2
+
+      - name: Check prerequisites
+        run: |
+          if [ -z "${{ secrets.VULTR_API_KEY }}" ]; then
+            echo "::error::Missing secret VULTR_API_KEY"
+            exit 1
+          fi
+          jq --version >/dev/null 2>&1 || sudo apt-get update && sudo apt-get install -y jq
+
+      - id: create
+        name: Create GPU instance
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          chmod +x scripts/create_gpu.sh
+          ./scripts/create_gpu.sh             --region "${{ github.event.inputs.region_id }}"             --plan "${{ github.event.inputs.plan_id }}"             --os "${{ github.event.inputs.os_id }}"             --label "${{ github.event.inputs.label }}"             --sshkeys "${{ github.event.inputs.add_ssh_key_ids }}"
+
+      - name: Upload instance json (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: instance-${{ steps.create.outputs.instance_id }}
+          path: instance-${{ steps.create.outputs.instance_id }}.json
+          if-no-files-found: error
+
+      - name: Job summary
+        run: |
+          echo "### Vultr GPU created ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **Instance ID:** \`${{ steps.create.outputs.instance_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Label:** \`${{ github.event.inputs.label }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Region:** \`${{ github.event.inputs.region_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Plan:** \`${{ github.event.inputs.plan_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **OS:** \`${{ github.event.inputs.os_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download the artifact to see IP and details." >> $GITHUB_STEP_SUMMARY
