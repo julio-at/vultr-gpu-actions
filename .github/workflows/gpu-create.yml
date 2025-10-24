@@ -4,20 +4,28 @@ on:
   workflow_dispatch:
     inputs:
       region_id:
-        description: "Region ID (e.g., ewr, sjc, ams)"
+        description: "Region ID (e.g., ewr, sjc, ams, fra)"
         required: true
       plan_id:
-        description: "GPU Plan ID (e.g., vcg-1c-16gb-l40s, etc.)"
+        description: "GPU Plan ID (from regions availability)"
         required: true
       os_id:
-        description: "OS ID (e.g., 215=Ubuntu 22.04, 477=Ubuntu 24.04, etc.)"
+        description: "OS ID (e.g., 215=Ubuntu 22.04, 477=Ubuntu 24.04)"
         required: true
       label:
-        description: "Label for the instance"
+        description: "Instance label"
         required: false
         default: "gpu-from-actions"
       add_ssh_key_ids:
-        description: "Comma-separated SSH Key IDs (optional)"
+        description: "Comma-separated Vultr SSH Key IDs (optional) — e.g., ssh-aaaa,ssh-bbbb"
+        required: false
+        default: ""
+      ssh_public_key:
+        description: "Public key text (optional) — e.g., output of 'cat ~/.ssh/id_ed25519.pub'"
+        required: false
+        default: ""
+      ssh_public_key_file:
+        description: "Path (optional) to a repo file containing a public key (e.g., keys/id_ed25519.pub)"
         required: false
         default: ""
 
@@ -30,24 +38,48 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install vultr-cli
-        uses: techknowlogick/vultr-cli-action@v2
-
-      - name: Check prerequisites
+      - name: Sanity checks
         run: |
           if [ -z "${{ secrets.VULTR_API_KEY }}" ]; then
             echo "::error::Missing secret VULTR_API_KEY"
             exit 1
           fi
-          jq --version >/dev/null 2>&1 || sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
 
       - id: create
-        name: Create GPU instance
+        name: Create GPU instance (API-based)
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
           chmod +x scripts/create_gpu.sh
-          ./scripts/create_gpu.sh             --region "${{ github.event.inputs.region_id }}"             --plan "${{ github.event.inputs.plan_id }}"             --os "${{ github.event.inputs.os_id }}"             --label "${{ github.event.inputs.label }}"             --sshkeys "${{ github.event.inputs.add_ssh_key_ids }}"
+
+          ARGS=()
+          ARGS+=( --region "${{ github.event.inputs.region_id }}" )
+          ARGS+=( --plan "${{ github.event.inputs.plan_id }}" )
+          ARGS+=( --os "${{ github.event.inputs.os_id }}" )
+          ARGS+=( --label "${{ github.event.inputs.label }}" )
+
+          if [ -n "${{ github.event.inputs.add_ssh_key_ids }}" ]; then
+            ARGS+=( --sshkeys "${{ github.event.inputs.add_ssh_key_ids }}" )
+          fi
+
+          if [ -n "${{ github.event.inputs.ssh_public_key }}" ]; then
+            ARGS+=( --sshpub "${{ github.event.inputs.ssh_public_key }}" )
+          fi
+
+          if [ -n "${{ github.event.inputs.ssh_public_key_file }}" ]; then
+            if [ ! -f "${{ github.event.inputs.ssh_public_key_file }}" ]; then
+              echo "::error::ssh_public_key_file not found: ${{ github.event.inputs.ssh_public_key_file }}"
+              exit 1
+            fi
+            ARGS+=( --sshpubfile "${{ github.event.inputs.ssh_public_key_file }}" )
+          fi
+
+          ./scripts/create_gpu.sh "${ARGS[@]}"
 
       - name: Upload instance json (artifact)
         uses: actions/upload-artifact@v4
@@ -65,4 +97,5 @@ jobs:
           echo "- **Plan:** \`${{ github.event.inputs.plan_id }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **OS:** \`${{ github.event.inputs.os_id }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Download the artifact to see IP and details." >> $GITHUB_STEP_SUMMARY
+          echo "Download the artifact to see IP and full details." >> $GITHUB_STEP_SUMMARY
+

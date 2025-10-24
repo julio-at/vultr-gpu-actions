@@ -3,6 +3,10 @@ name: GPU • Inspect & Helpers
 on:
   workflow_dispatch:
     inputs:
+      region_id:
+        description: "Region to inspect (default: ewr)"
+        required: false
+        default: "ewr"
       instance_id:
         description: "Instance ID (optional for inspection)"
         required: false
@@ -17,24 +21,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install vultr-cli
-        uses: techknowlogick/vultr-cli-action@v2
+      - name: Install vultr-cli + jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          # Quick install of vultr-cli via Go (reliable on runners)
+          sudo apt-get install -y golang
+          export GOPATH="$HOME/go"
+          export PATH="$GOPATH/bin:$PATH"
+          /usr/bin/env bash -lc 'go install github.com/vultr/vultr-cli/v3@latest'
+          vultr-cli version || true
 
-      - name: Check prerequisites
+      - name: Check secret
         run: |
           if [ -z "${{ secrets.VULTR_API_KEY }}" ]; then
             echo "::error::Missing secret VULTR_API_KEY"
             exit 1
           fi
-          jq --version >/dev/null 2>&1 || sudo apt-get update && sudo apt-get install -y jq
 
-      - name: List helpers (regions/plans/os)
+      - name: List helpers (regions/os/plans availability)
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
           chmod +x scripts/list_helpers.sh
-          ./scripts/list_helpers.sh | tee helpers.txt
+          ./scripts/list_helpers.sh "${{ github.event.inputs.region_id }}" | tee helpers.txt
           echo "### Helpers" >> $GITHUB_STEP_SUMMARY
+          echo '**Region:** ${{ github.event.inputs.region_id }}' >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           cat helpers.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -44,4 +57,6 @@ jobs:
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
-          vultr-cli instance get ${{ inputs.instance_id }} --format json | jq .
+          curl -sS -X GET "https://api.vultr.com/v2/instances/${{ inputs.instance_id }}" \
+            -H "Authorization: Bearer ${VULTR_API_KEY}" | jq .
+

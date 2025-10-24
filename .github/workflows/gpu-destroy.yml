@@ -16,17 +16,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install vultr-cli
-        uses: techknowlogick/vultr-cli-action@v2
-
-      - name: Check prerequisites
+      - name: Sanity checks
         run: |
           if [ -z "${{ secrets.VULTR_API_KEY }}" ]; then
             echo "::error::Missing secret VULTR_API_KEY"
             exit 1
           fi
 
-      - name: Destroy instance
+      - name: Destroy instance (API-based)
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
         run: |
@@ -37,3 +34,4 @@ jobs:
         run: |
           echo "### Vultr GPU destroyed 🗑️" >> $GITHUB_STEP_SUMMARY
           echo "- **Instance ID:** \`${{ github.event.inputs.instance_id }}\`" >> $GITHUB_STEP_SUMMARY
+
